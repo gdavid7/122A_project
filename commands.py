@@ -118,190 +118,144 @@ def _print_bool(success):
 
 def _print_table(rows):
     for row in rows:
-        print(",".join("None" if v is None else str(v) for v in row))
+        print(",".join("NULL" if v is None else str(v) for v in row))
 
 
-def import_data(conn, folder):
-    try:
-        cur = conn.cursor()
-        for stmt in DDL:
-            cur.execute(stmt)
-
-        for table, filename, num_cols in LOAD_ORDER:
-            path = os.path.join(folder, filename)
-            rows = []
-            with open(path) as f:
-                for row in csv.reader(f):
-                    rows.append([None if v == "NULL" else v for v in row])
-            if rows:
-                placeholders = ",".join(["%s"] * num_cols)
-                cur.executemany(
-                    f"INSERT INTO {table} VALUES ({placeholders})", rows
-                )
-
-        conn.commit()
-        _print_bool(True)
-    except Exception:
-        conn.rollback()
-        _print_bool(False)
+def _writer(fn):
+    def wrapper(conn, *args):
+        try:
+            cur = conn.cursor()
+            ok = fn(cur, *args)
+            if ok:
+                conn.commit()
+            else:
+                conn.rollback()
+            _print_bool(ok)
+        except Exception:
+            conn.rollback()
+            _print_bool(False)
+    return wrapper
 
 
-def insert_admin(conn, uid, email, username, joined, firstname, lastname):
-    try:
-        cur = conn.cursor()
+@_writer
+def import_data(cur, folder):
+    for stmt in DDL:
+        cur.execute(stmt)
+
+    for table, filename, num_cols in LOAD_ORDER:
+        path = os.path.join(folder, filename)
+        rows = []
+        with open(path) as f:
+            for row in csv.reader(f):
+                rows.append([None if v == "NULL" else v for v in row])
+        if rows:
+            placeholders = ",".join(["%s"] * num_cols)
+            cur.executemany(f"INSERT INTO {table} VALUES ({placeholders})", rows)
+    return True
+
+
+@_writer
+def insert_admin(cur, uid, email, username, joined, firstname, lastname):
+    cur.execute(
+        "INSERT INTO User (uid, email, username, joined) VALUES (%s, %s, %s, %s)",
+        (uid, email, username, joined),
+    )
+    cur.execute(
+        "INSERT INTO Administrator (uid, firstname, lastname) VALUES (%s, %s, %s)",
+        (uid, firstname, lastname),
+    )
+    return True
+
+
+@_writer
+def add_venue(cur, eid, vid, is_primary):
+    is_primary_int = 1 if is_primary.lower() == "true" else 0
+
+    cur.execute("SELECT 1 FROM Hosting WHERE eid = %s AND vid = %s", (eid, vid))
+    if cur.fetchone():
+        return False
+
+    if is_primary_int == 1:
         cur.execute(
-            "INSERT INTO User (uid, email, username, joined) VALUES (%s, %s, %s, %s)",
-            (uid, email, username, joined),
-        )
-        cur.execute(
-            "INSERT INTO Administrator (uid, firstname, lastname) VALUES (%s, %s, %s)",
-            (uid, firstname, lastname),
-        )
-        conn.commit()
-        _print_bool(True)
-    except Exception:
-        conn.rollback()
-        _print_bool(False)
-
-
-def add_venue(conn, eid, vid, is_primary):
-    try:
-        cur = conn.cursor()
-        is_primary_int = 1 if is_primary.lower() == "true" else 0
-
-        cur.execute(
-            "SELECT 1 FROM Hosting WHERE eid = %s AND vid = %s", (eid, vid)
+            "SELECT 1 FROM Hosting WHERE eid = %s AND is_primary = 1",
+            (eid,),
         )
         if cur.fetchone():
-            _print_bool(False)
-            return
+            return False
 
-        if is_primary_int == 1:
-            cur.execute(
-                "SELECT 1 FROM Hosting WHERE eid = %s AND is_primary = 1",
-                (eid,),
-            )
-            if cur.fetchone():
-                _print_bool(False)
-                return
-
-        cur.execute(
-            "INSERT INTO Hosting (eid, vid, is_primary) VALUES (%s, %s, %s)",
-            (eid, vid, is_primary_int),
-        )
-        conn.commit()
-        _print_bool(True)
-    except Exception:
-        conn.rollback()
-        _print_bool(False)
+    cur.execute(
+        "INSERT INTO Hosting (eid, vid, is_primary) VALUES (%s, %s, %s)",
+        (eid, vid, is_primary_int),
+    )
+    return True
 
 
-def reserve_slot(conn, eid, snum, uid):
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            "UPDATE Slot SET is_reserved = 1, uid = %s "
-            "WHERE eid = %s AND snum = %s AND is_reserved = 0",
-            (uid, eid, snum),
-        )
-        success = cur.rowcount == 1
-        if success:
-            conn.commit()
-        else:
-            conn.rollback()
-        _print_bool(success)
-    except Exception:
-        conn.rollback()
-        _print_bool(False)
+@_writer
+def reserve_slot(cur, eid, snum, uid):
+    cur.execute(
+        "UPDATE Slot SET is_reserved = 1, uid = %s "
+        "WHERE eid = %s AND snum = %s AND is_reserved = 0",
+        (uid, eid, snum),
+    )
+    return cur.rowcount == 1
 
 
-def cancel_reservation(conn, eid, snum, uid):
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            "UPDATE Slot SET is_reserved = 0, uid = NULL "
-            "WHERE eid = %s AND snum = %s AND uid = %s AND is_reserved = 1",
-            (eid, snum, uid),
-        )
-        success = cur.rowcount == 1
-        if success:
-            conn.commit()
-        else:
-            conn.rollback()
-        _print_bool(success)
-    except Exception:
-        conn.rollback()
-        _print_bool(False)
+@_writer
+def cancel_reservation(cur, eid, snum, uid):
+    cur.execute(
+        "UPDATE Slot SET is_reserved = 0, uid = NULL "
+        "WHERE eid = %s AND snum = %s AND uid = %s AND is_reserved = 1",
+        (eid, snum, uid),
+    )
+    return cur.rowcount == 1
 
 
-def update_event(conn, eid, title, dt):
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            "UPDATE Event SET title = %s, datetime = %s WHERE eid = %s",
-            (title, dt, eid),
-        )
-        success = cur.rowcount == 1
-        if success:
-            conn.commit()
-        else:
-            conn.rollback()
-        _print_bool(success)
-    except Exception:
-        conn.rollback()
-        _print_bool(False)
+@_writer
+def update_event(cur, eid, title, dt):
+    cur.execute(
+        "UPDATE Event SET title = %s, datetime = %s WHERE eid = %s",
+        (title, dt, eid),
+    )
+    return cur.rowcount == 1
 
 
-def delete_organizer(conn, uid):
-    try:
-        cur = conn.cursor()
-        cur.execute("DELETE FROM Organizer WHERE uid = %s", (uid,))
-        success = cur.rowcount == 1
-        if success:
-            conn.commit()
-        else:
-            conn.rollback()
-        _print_bool(success)
-    except Exception:
-        conn.rollback()
-        _print_bool(False)
+@_writer
+def delete_organizer(cur, uid):
+    cur.execute("DELETE FROM Organizer WHERE uid = %s", (uid,))
+    return cur.rowcount == 1
+
+
+def _query(conn, query, params):
+    cur = conn.cursor()
+    cur.execute(query, params)
+    _print_table(cur.fetchall())
 
 
 def available_events(conn, date):
-    cur = conn.cursor()
-    cur.execute(
-        """
+    query = """
         SELECT e.eid, e.title, e.type, e.datetime, COUNT(*)
         FROM Event e JOIN Slot s ON e.eid = s.eid
         WHERE e.datetime > %s AND s.is_reserved = 0
         GROUP BY e.eid, e.title, e.type, e.datetime
         ORDER BY e.datetime ASC, e.eid ASC
-        """,
-        (date,),
-    )
-    _print_table(cur.fetchall())
+        """
+    _query(conn, query, (date,))
 
 
 def popular_event_types(conn, n):
-    cur = conn.cursor()
-    cur.execute(
-        """
+    query = """
         SELECT e.type, COUNT(*) AS reservedCount
         FROM Event e JOIN Slot s ON e.eid = s.eid
         WHERE s.is_reserved = 1
         GROUP BY e.type
         HAVING reservedCount >= %s
         ORDER BY reservedCount DESC, e.type ASC
-        """,
-        (int(n),),
-    )
-    _print_table(cur.fetchall())
+        """
+    _query(conn, query, (int(n),))
 
 
 def participant_schedule(conn, uid):
-    cur = conn.cursor()
-    cur.execute(
-        """
+    query = """
         SELECT e.eid, e.title, e.type, e.datetime, s.snum,
                v.vid, v.street, v.city, v.state, v.zip
         FROM Slot s
@@ -310,39 +264,29 @@ def participant_schedule(conn, uid):
         LEFT JOIN Venue v ON h.vid = v.vid
         WHERE s.uid = %s
         ORDER BY e.datetime ASC
-        """,
-        (uid,),
-    )
-    _print_table(cur.fetchall())
+        """
+    _query(conn, query, (uid,))
 
 
 def organizer_stats(conn, n):
-    cur = conn.cursor()
-    cur.execute(
-        """
+    query = """
         SELECT o.uid, u.username, o.department, COUNT(e.eid) AS eventCount
         FROM Organizer o
         JOIN User u ON o.uid = u.uid
-        JOIN Event e ON e.creator_uid = o.uid
+        LEFT JOIN Event e ON e.creator_uid = o.uid
         GROUP BY o.uid, u.username, o.department
         HAVING eventCount >= %s
         ORDER BY eventCount DESC, o.uid ASC
-        """,
-        (int(n),),
-    )
-    _print_table(cur.fetchall())
+        """
+    _query(conn, query, (int(n),))
 
 
 def venue_events(conn, vid):
-    cur = conn.cursor()
-    cur.execute(
-        """
+    query = """
         SELECT e.eid, e.title, e.type, e.datetime, h.is_primary
         FROM Hosting h
         JOIN Event e ON h.eid = e.eid
         WHERE h.vid = %s
         ORDER BY e.datetime ASC, e.eid ASC
-        """,
-        (vid,),
-    )
-    _print_table(cur.fetchall())
+        """
+    _query(conn, query, (vid,))

@@ -3,7 +3,7 @@ import mysql.connector
 
 import commands
 
-DISPATCH = {
+COMMANDS = {
     "import": commands.import_data,
     "insertAdmin": commands.insert_admin,
     "addVenue": commands.add_venue,
@@ -20,12 +20,11 @@ DISPATCH = {
 
 
 def main():
-    func = DISPATCH[sys.argv[1]]
-    conn = mysql.connector.connect(
-        user="test", password="password", database="cs122a"
-    )
+    cmd, args = sys.argv[1], sys.argv[2:]
+    func = COMMANDS[cmd]
+    conn = mysql.connector.connect(user="test", password="password", database="cs122a")
     try:
-        func(conn, *sys.argv[2:])
+        func(conn, *args)
     finally:
         conn.close()
 
